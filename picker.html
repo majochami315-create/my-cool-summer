@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Cool Summer Light Picker</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f7; color: #333; overflow-x: hidden; }
+        
+        /* カメラコンテナ */
+        .camera-container { position: relative; width: 100%; height: 60vh; background: #000; display: flex; align-items: center; justify-content: center; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* 照準（ターゲットリング） */
+        .target-ring { position: absolute; width: 30px; height: 30px; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 8px rgba(0,0,0,0.5); pointer-events: none; }
+        .target-ring::after { content: ''; position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; background: #fff; border-radius: 50%; transform: translate(-50%, -50%); }
+        
+        /* 結果表示エリア */
+        .result-panel { padding: 20px; background: #fff; border-radius: 24px 24px 0 0; margin-top: -20px; position: relative; z-index: 10; box-shadow: 0 -10px 20px rgba(0,0,0,0.05); min-height: 42vh; }
+        
+        .color-preview-box { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+        .current-color-dot { width: 60px; height: 60px; border-radius: 16px; border: 2px solid #e5e5e7; box-shadow: inset 0 2px 4px rgba(0,0,0,0.05); }
+        .color-hex-text { font-size: 1.4rem; font-weight: 700; font-family: monospace; letter-spacing: 0.05em; }
+        
+        /* 判定結果のカード */
+        .judgement-card { padding: 16px; border-radius: 16px; background: #f5f5f7; border: 1px solid #e5e5e7; text-align: center; margin-bottom: 16px; transition: all 0.3s ease; }
+        .match-high { background: #e8f5e9; border-color: #a5d6a7; color: #2e7d32; }
+        .match-medium { background: #e3f2fd; border-color: #90caf9; color: #1565c0; }
+        .match-low { background: #fafafa; border-color: #e0e0e0; color: #616161; }
+        
+        .status-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 4px; }
+        .status-score { font-size: 0.9rem; opacity: 0.8; }
+        
+        .nearest-color-info { font-size: 0.85rem; color: #666; text-align: center; line-height: 1.4; }
+        
+        /* キャンバス（非表示で計算用に使用） */
+        canvas { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="camera-container">
+        <video id="webcam" autoplay playsinline muted></video>
+        <div class="target-ring"></div>
+    </div>
+
+    <div class="result-panel">
+        <div class="color-preview-box">
+            <div id="colorDot" class="current-color-dot"></div>
+            <div>
+                <div id="hexText" class="color-hex-text">#------</div>
+                <div style="font-size: 0.8rem; color: #888;">中央の照準の色</div>
+            </div>
+        </div>
+
+        <div id="judgeCard" class="judgement-card match-low">
+            <div id="judgeTitle" class="status-title">カメラをかざしてください</div>
+            <div id="judgeScore" class="status-score">あなたの「光」を探索中...</div>
+        </div>
+
+        <div id="nearestInfo" class="nearest-color-info"></div>
+    </div>
+
+    <canvas id="analyzerCanvas"></canvas>
+
+    <script>
+        // あなたの「クールサマー三原色」正解データ
+        const coolSummerPalette = [
+            { name: "ローズピンク", hex: "#E88297", r: 232, g: 130, b: 151 },
+            { name: "オーチャード", hex: "#DC7296", r: 220, g: 114, b: 150 },
+            { name: "ローズ", hex: "#A94465", r: 169, g: 68, b: 101 },
+            { name: "ラズベリー", hex: "#BE0B45", r: 190, g: 11, b: 69 },
+            { name: "ブルーレッド", hex: "#C10A3E", r: 193, g: 10, b: 62 },
+            { name: "ライトグリーン", hex: "#00A588", r: 0, g: 165, b: 136 },
+            { name: "エメラルドターコイズ", hex: "#00908F", r: 0, g: 144, b: 143 },
+            { name: "パイン", hex: "#0D4A50", r: 13, g: 74, b: 80 },
+            { name: "ティール", hex: "#00485E", r: 0, g: 72, b: 94 },
+            { name: "ミディアムアクア", hex: "#00ACE2", r: 0, g: 172, b: 226 },
+            { name: "クリアアクア", hex: "#0097CD", r: 0, g: 151, b: 205 },
+            { name: "カデットブルー", hex: "#114C92", r: 17, g: 76, b: 146 },
+            { name: "トゥルーブルー", hex: "#004D8C", r: 0, g: 77, b: 140 },
+            { name: "ペリウィンクル", hex: "#556CB5", r: 85, g: 108, b: 181 },
+            { name: "パープル", hex: "#312463", r: 49, g: 36, b: 99 },
+            { name: "プラム", hex: "#3E123D", r: 62, g: 18, b: 61 },
+            { name: "ネイビー", hex: "#101E41", r: 16, g: 30, b: 65 },
+            { name: "グレーブルー", hex: "#2F435F", r: 47, g: 67, b: 95 },
+            { name: "シルバー", hex: "#7C837F", r: 124, g: 131, b: 127 }
+        ];
+
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('analyzerCanvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        
+        const colorDot = document.getElementById('colorDot');
+        const hexText = document.getElementById('hexText');
+        const judgeCard = document.getElementById('judgeCard');
+        const judgeTitle = document.getElementById('judgeTitle');
+        const judgeScore = document.getElementById('judgeScore');
+        const nearestInfo = document.getElementById('nearestInfo');
+
+        // カメラの起動（背面カメラを指定・サイズを軽量化して正しく接続）
+        navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                facingMode: "environment",
+                width: { ideal: 640 },
+                height: { ideal: 480 }
+            }, 
+            audio: false 
+        })
+        .then(stream => {
+            video.srcObject = stream;
+            video.addEventListener('loadedmetadata', () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                tick();
+            });
+        })
+        .catch(err => {
+            judgeTitle.innerText = "カメラを起動できません";
+            judgeScore.innerText = "ブラウザのカメラ権限を「許可」にしてください。";
+        });
+
+        // リアルタイムでの色解析ループ
+        function tick() {
+            if (video.readyState === video.HAVE_CURRENT_DATA) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                const centerX = Math.floor(canvas.width / 2);
+                const centerY = Math.floor(canvas.height / 2);
+                const pixel = ctx.getImageData(centerX, centerY, 1, 1).data;
+                
+                const r = pixel[0];
+                const g = pixel[1];
+                const b = pixel[2];
+                
+                const currentHex = "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
+                
+                colorDot.style.backgroundColor = currentHex;
+                hexText.innerText = currentHex;
+                
+                analyzeColorMatch(r, g, b);
+            }
+            requestAnimationFrame(tick);
+        }
+
+        // 適合度の計算ロジック
+        function analyzeColorMatch(r, g, b) {
+            let minDistance = Infinity;
+            let closestColor = null;
+
+            coolSummerPalette.forEach(color => {
+                const distance = Math.sqrt(
+                    Math.pow(r - color.r, 2) +
+                    Math.pow(g - color.g, 2) +
+                    Math.pow(b - color.b, 2)
+                );
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestColor = color;
+                }
+            });
+
+            let matchPercentage = Math.round((1 - (minDistance / 300)) * 100);
+            if (matchPercentage > 100) matchPercentage = 100;
+            if (matchPercentage < 0) matchPercentage = 0;
+
+            if (r > 160 && g > 160 && b < 130) {
+                matchPercentage -= 20;
+            }
+
+            judgeCard.className = "judgement-card";
+            
+            if (matchPercentage >= 80) {
+                judgeCard.classList.add("match-high");
+                judgeTitle.innerText = "✨ パーフェクト！あなたの光です";
+                judgeScore.innerText = `適合率: ${matchPercentage}% （クールサマーに最適）`;
+            } else if (matchPercentage >= 55) {
+                judgeCard.classList.add("match-medium");
+                judgeTitle.innerText = "🔹 心地よい調和（サマーの範囲内）";
+                judgeScore.innerText = `適合率: ${matchPercentage}% （コーディネートに馴染みます）`;
+            } else {
+                judgeCard.classList.add("match-low");
+                judgeTitle.innerText = "⚠️ 少し違う光かもしれません";
+                judgeScore.innerText = `適合率: ${matchPercentage}% （黄みや鮮やかさが強いです）`;
+            }
+
+            if (closestColor) {
+                nearestInfo.innerHTML = `一番近いパレットの色: <strong>${closestColor.name}</strong><br>（あなたの正解コード ${closestColor.hex} に近いトーンです）`;
+            }
+        }
+    </script>
+</body>
+</html>
